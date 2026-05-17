@@ -27,9 +27,30 @@ export async function POST(req: Request) {
     const buffer = Buffer.from(bytes);
 
     // Extract text from PDF
-    const options = { pagerender: render_page };
-    const pdfData = await pdf(buffer, options);
-    const text = pdfData.text;
+    let text = '';
+    try {
+      const options = { pagerender: render_page };
+      const pdfData = await pdf(buffer, options);
+      text = pdfData.text;
+    } catch (parseError: any) {
+      console.warn(`Primary PDF parsing failed for ${file.name}, attempting fallback:`, parseError.message);
+      try {
+        const { getDocumentProxy } = await import('unpdf');
+        const pdfProxy = await getDocumentProxy(new Uint8Array(buffer));
+        
+        for (let i = 1; i <= pdfProxy.numPages; i++) {
+          const page = await pdfProxy.getPage(i);
+          const content = await page.getTextContent();
+          const pageText = content.items.map((item: any) => item.str).join(' ');
+          text += `\n--- PAGE ${i} ---\n${pageText}\n`;
+        }
+      } catch (fallbackError: any) {
+        console.error(`Fallback PDF parsing failed for ${file.name}:`, fallbackError.message);
+        return NextResponse.json({ 
+          error: 'Could not read this PDF. Try exporting/printing it to a new PDF and upload again.' 
+        }, { status: 500 });
+      }
+    }
 
     if (!text || text.trim().length === 0) {
       return NextResponse.json({ error: 'No text could be extracted from this PDF' }, { status: 400 });
