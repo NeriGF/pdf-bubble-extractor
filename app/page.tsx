@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useMemo } from 'react';
+import { usePostHog } from 'posthog-js/react';
 
 type Bubble = {
   title: string;
@@ -97,6 +98,15 @@ export default function Home() {
   
   const [bubbleLayouts, setBubbleLayouts] = useState<BubbleLayout[]>([]);
 
+  const posthog = usePostHog();
+
+  const trackEvent = (eventName: string, properties?: Record<string, any>) => {
+    console.log(`[PostHog] Event: ${eventName}`, properties || '');
+    if (posthog) {
+      posthog.capture(eventName, properties);
+    }
+  };
+
   // Compute visibility
   const visibleIndices = useMemo(() => {
     if (showAllInsights) return bubbles.map((_, i) => i);
@@ -131,6 +141,8 @@ export default function Home() {
     setShowAllInsights(false);
     setBubbleLayouts([]);
 
+    trackEvent('pdf_uploaded', { fileName: file.name, fileSize: file.size });
+
     const formData = new FormData();
     formData.append('file', file);
 
@@ -150,11 +162,14 @@ export default function Home() {
         setBubbles(data.bubbles);
         setDocumentText(data.documentText);
         setHasProcessed(true);
+        trackEvent('annotations_generated', { bubbleCount: data.bubbles.length });
+        trackEvent('document_completed', { fileName: file.name });
       } else {
         throw new Error('Invalid response format');
       }
     } catch (err: any) {
       setError(err.message);
+      trackEvent('upload_failed', { error: err.message, fileName: file.name });
     } finally {
       setIsLoading(false);
     }
@@ -450,6 +465,7 @@ export default function Home() {
                     className={`callout-card bottom-card style-${bubble.importance} ${isHovered ? 'card-hovered' : ''}`}
                     onMouseEnter={() => setHoveredIdx(idx)}
                     onMouseLeave={() => setHoveredIdx(null)}
+                    onClick={() => trackEvent('callout_clicked', { title: bubble.title, type: bubble.type, importance: bubble.importance, cardPosition: 'bottom' })}
                   >
                     {renderCardContent(bubble)}
                   </div>
@@ -486,6 +502,7 @@ export default function Home() {
                   style={{ top: layout.top, left: layout.left, right: layout.right }}
                   onMouseEnter={() => setHoveredIdx(idx)}
                   onMouseLeave={() => setHoveredIdx(null)}
+                  onClick={() => trackEvent('callout_clicked', { title: bubble.title, type: bubble.type, importance: bubble.importance, cardPosition: 'side' })}
                 >
                   {renderCardContent(bubble)}
                 </div>

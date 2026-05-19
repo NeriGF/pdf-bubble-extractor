@@ -13,6 +13,7 @@
     "openai": "^6.37.0",
     "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^5.7.284",
+    "posthog-js": "^1.374.2",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "unpdf": "^1.6.2"
