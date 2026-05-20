@@ -18,6 +18,7 @@ export async function POST(req: Request) {
     const openai = new OpenAI(); // Uses OPENAI_API_KEY from environment
     const formData = await req.formData();
     const file = formData.get('file') as File;
+    const isFull = formData.get('full') === 'true';
 
     if (!file) {
       return NextResponse.json({ error: 'No file uploaded' }, { status: 400 });
@@ -56,9 +57,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'No text could be extracted from this PDF' }, { status: 400 });
     }
 
-    const MAX_CHARS = 12000;
-    const isPreview = text.length > MAX_CHARS;
-    const truncatedText = isPreview ? text.substring(0, MAX_CHARS) : text;
+    const MAX_CHARS = isFull ? 50000 : 12000;
+    const isPreview = !isFull && text.length > MAX_CHARS;
+    const truncatedText = text.length > MAX_CHARS ? text.substring(0, MAX_CHARS) : text;
 
     // Send to OpenAI
     const completion = await openai.chat.completions.create({
