@@ -56,6 +56,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'No text could be extracted from this PDF' }, { status: 400 });
     }
 
+    const MAX_CHARS = 12000;
+    const isPreview = text.length > MAX_CHARS;
+    const truncatedText = isPreview ? text.substring(0, MAX_CHARS) : text;
+
     // Send to OpenAI
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -95,7 +99,7 @@ Ensure all keys are populated and the response is ONLY valid JSON.
         },
         {
           role: 'user',
-          content: `Here is the extracted document text:\n\n${text.substring(0, 50000)}` // Limit text to avoid token limits just in case
+          content: `Here is the extracted document text:\n\n${truncatedText}` // Limit text to avoid token limits just in case
         }
       ],
       response_format: { type: 'json_object' },
@@ -106,7 +110,8 @@ Ensure all keys are populated and the response is ONLY valid JSON.
 
     return NextResponse.json({
       bubbles: result.bubbles,
-      documentText: text
+      documentText: truncatedText,
+      isPreview: isPreview
     });
   } catch (error: any) {
     console.error('Error processing PDF:', error);

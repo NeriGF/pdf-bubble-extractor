@@ -19,7 +19,48 @@ type TextSegment = {
   text: string;
   isHighlight: boolean;
   bubbleIdx?: number;
+  isPageMarker?: boolean;
+  pageNum?: string;
 };
+
+function findMatch(docText: string, sourceText?: string) {
+  if (!sourceText) return { index: -1, length: 0 };
+  
+  // Try exact match first
+  let idx = docText.indexOf(sourceText);
+  if (idx !== -1) return { index: idx, length: sourceText.length };
+
+  // Try fuzzy match
+  const normalize = (t: string) => t.replace(/\s+/g, ' ').trim();
+  const normSource = normalize(sourceText);
+  if (!normSource) return { index: -1, length: 0 };
+
+  const escapedSource = normSource.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regexPattern = escapedSource.split(' ').join('\\s+');
+  
+  try {
+    const regex = new RegExp(regexPattern, 'i');
+    const match = docText.match(regex);
+    if (match && match.index !== undefined) {
+      return { index: match.index, length: match[0].length };
+    }
+  } catch(e) {}
+
+  // Try partial phrase match
+  const words = normSource.split(' ');
+  if (words.length > 4) {
+    const halfPattern = words.slice(0, Math.floor(words.length / 2)).join('\\s+');
+    try {
+      const halfRegex = new RegExp(halfPattern, 'i');
+      const match = docText.match(halfRegex);
+      if (match && match.index !== undefined) {
+        return { index: match.index, length: match[0].length };
+      }
+    } catch(e) {}
+  }
+
+  return { index: -1, length: 0 };
+}
 
 type BubbleLayout = {
   isBottom: boolean;
@@ -88,6 +129,7 @@ export default function Home() {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [hasProcessed, setHasProcessed] = useState(false);
+  const [isPreview, setIsPreview] = useState(false);
   
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const [showAllInsights, setShowAllInsights] = useState(false);
@@ -140,6 +182,7 @@ export default function Home() {
     setHoveredIdx(null);
     setShowAllInsights(false);
     setBubbleLayouts([]);
+    setIsPreview(false);
 
     trackEvent('pdf_uploaded', { fileName: file.name, fileSize: file.size });
 
@@ -161,6 +204,7 @@ export default function Home() {
       if (data.bubbles && data.documentText) {
         setBubbles(data.bubbles);
         setDocumentText(data.documentText);
+        setIsPreview(data.isPreview || false);
         setHasProcessed(true);
         trackEvent('annotations_generated', { bubbleCount: data.bubbles.length });
         trackEvent('document_completed', { fileName: file.name });
@@ -175,36 +219,74 @@ export default function Home() {
     }
   };
 
+  let anchoredCount = 0;
+  let unanchoredIndices = new Set<number>();
+
   const segments: TextSegment[] = [];
   if (documentText && bubbles.length > 0) {
-    const matches = bubbles
-      .map((b, i) => ({
+    const matches = bubbles.map((b, i) => {
+      const match = findMatch(documentText, b.sourceText);
+      return {
         bubbleIdx: i,
-        index: b.sourceText ? documentText.indexOf(b.sourceText) : -1,
-        length: b.sourceText ? b.sourceText.length : 0
-      }))
-      .filter(m => m.index !== -1 && visibleBubblesSet.has(m.bubbleIdx))
-      .sort((a, b) => a.index - b.index);
+        index: match.index,
+        length: match.length,
+        isAnchored: match.index !== -1
+      };
+    });
 
-    const filteredMatches: typeof matches = [];
+    anchoredCount = matches.filter(m => m.isAnchored).length;
+    unanchoredIndices = new Set(matches.filter(m => !m.isAnchored).map(m => m.bubbleIdx));
+
+    const validMatches = matches
+      .filter(m => m.index !== -1 && visibleBubblesSet.has(m.bubbleIdx));
+
+    const allMarkers: any[] = [];
+    
+    for (const m of validMatches) {
+      allMarkers.push({ type: 'bubble', ...m });
+    }
+    
+    const pageRegex = /---\s*PAGE\s+(\d+)\s*---/g;
+    let pageMatch;
+    while ((pageMatch = pageRegex.exec(documentText)) !== null) {
+      allMarkers.push({
+        type: 'page',
+        index: pageMatch.index,
+        length: pageMatch[0].length,
+        pageNum: pageMatch[1]
+      });
+    }
+
+    allMarkers.sort((a, b) => a.index - b.index);
+
+    const filteredMarkers: typeof allMarkers = [];
     let lastEnd = 0;
-    for (const m of matches) {
+    for (const m of allMarkers) {
       if (m.index >= lastEnd) {
-        filteredMatches.push(m);
+        filteredMarkers.push(m);
         lastEnd = m.index + m.length;
       }
     }
 
     let currentIdx = 0;
-    for (const match of filteredMatches) {
+    for (const match of filteredMarkers) {
       if (match.index > currentIdx) {
         segments.push({ text: documentText.substring(currentIdx, match.index), isHighlight: false });
       }
-      segments.push({ 
-        text: documentText.substring(match.index, match.index + match.length), 
-        isHighlight: true,
-        bubbleIdx: match.bubbleIdx
-      });
+      if (match.type === 'bubble') {
+        segments.push({ 
+          text: documentText.substring(match.index, match.index + match.length), 
+          isHighlight: true,
+          bubbleIdx: match.bubbleIdx
+        });
+      } else if (match.type === 'page') {
+        segments.push({
+          text: '',
+          isHighlight: false,
+          isPageMarker: true,
+          pageNum: match.pageNum
+        });
+      }
       currentIdx = match.index + match.length;
     }
     if (currentIdx < documentText.length) {
@@ -364,6 +446,15 @@ export default function Home() {
         <p>A living document with anchored AI insights.</p>
       </header>
 
+      {hasProcessed && (
+        <div className="debug-panel">
+          <div><strong>Extracted Text Length:</strong> {documentText.length.toLocaleString()} chars</div>
+          <div><strong>AI Insights Returned:</strong> {bubbles.length}</div>
+          <div><strong>Matched Source Anchors:</strong> {anchoredCount}</div>
+          <div><strong>Rendered Callouts:</strong> {bubbles.length}</div>
+        </div>
+      )}
+
       {!hasProcessed && !isLoading && (
         <section 
           className="upload-section" 
@@ -432,8 +523,32 @@ export default function Home() {
           </svg>
 
           <div className="document-container">
+            {isPreview && (
+              <div className="preview-banner">
+                Preview analyzing first pages only.
+              </div>
+            )}
+            
+            {unanchoredIndices.size > 0 && (
+              <div className="warning-banner">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                  <line x1="12" y1="9" x2="12" y2="13"></line>
+                  <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                </svg>
+                Insights generated, but source text could not be matched.
+              </div>
+            )}
+
             <div className="document-view">
               {segments.map((seg, idx) => {
+                if (seg.isPageMarker) {
+                  return (
+                    <div key={idx} className="page-divider">
+                      <span>Page {seg.pageNum}</span>
+                    </div>
+                  );
+                }
                 if (seg.isHighlight) {
                   const bubble = bubbles[seg.bubbleIdx!];
                   const isHovered = hoveredIdx === seg.bubbleIdx;
@@ -456,7 +571,7 @@ export default function Home() {
             
             <div className="bottom-cards-row">
               {bubbles.map((bubble, idx) => {
-                if (bubble.importance !== 'low' || !visibleBubblesSet.has(idx)) return null;
+                if (bubble.importance !== 'low' || !visibleBubblesSet.has(idx) || unanchoredIndices.has(idx)) return null;
                 const isHovered = hoveredIdx === idx;
                 return (
                   <div 
@@ -472,6 +587,30 @@ export default function Home() {
                 );
               })}
             </div>
+
+            {unanchoredIndices.size > 0 && (
+              <div className="top-insights-section">
+                <h2>Top Insights (Unanchored)</h2>
+                <div className="bottom-cards-row">
+                  {bubbles.map((bubble, idx) => {
+                    if (!unanchoredIndices.has(idx)) return null;
+                    const isHovered = hoveredIdx === idx;
+                    return (
+                      <div 
+                        key={idx}
+                        id={`bubble-card-${idx}`}
+                        className={`callout-card bottom-card style-${bubble.importance} ${isHovered ? 'card-hovered' : ''}`}
+                        onMouseEnter={() => setHoveredIdx(idx)}
+                        onMouseLeave={() => setHoveredIdx(null)}
+                        onClick={() => trackEvent('callout_clicked', { title: bubble.title, type: bubble.type, importance: bubble.importance, cardPosition: 'unanchored' })}
+                      >
+                        {renderCardContent(bubble)}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             
             {bubbles.length > 6 && (
               <div className="toggle-insights-container">
@@ -487,7 +626,7 @@ export default function Home() {
 
           <div className="callouts-overlay">
             {bubbles.map((bubble, idx) => {
-              if (bubble.importance === 'low' || !visibleBubblesSet.has(idx)) return null;
+              if (bubble.importance === 'low' || !visibleBubblesSet.has(idx) || unanchoredIndices.has(idx)) return null;
               
               const layout = bubbleLayouts[idx];
               if (!layout) return null;
