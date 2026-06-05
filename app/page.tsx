@@ -135,9 +135,10 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [hasProcessed, setHasProcessed] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [flashIdx, setFlashIdx] = useState<number | null>(null);
   
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
-  const [showAllInsights, setShowAllInsights] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const highlightRefs = useRef<(HTMLElement | null)[]>([]);
@@ -154,19 +155,8 @@ export default function Home() {
     }
   };
 
-  // Compute visibility
-  const visibleIndices = useMemo(() => {
-    if (showAllInsights) return bubbles.map((_, i) => i);
-    
-    const importanceScore = { 'high': 3, 'medium': 2, 'low': 1 };
-    return bubbles
-      .map((b, i) => ({ idx: i, score: importanceScore[b.importance] }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 6)
-      .map(item => item.idx);
-  }, [bubbles, showAllInsights]);
-
-  const visibleBubblesSet = useMemo(() => new Set(visibleIndices), [visibleIndices]);
+  // Remove visibility limits
+  const visibleBubblesSet = useMemo(() => new Set(bubbles.map((_, i) => i)), [bubbles]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -185,7 +175,8 @@ export default function Home() {
     setDocumentText('');
     setHasProcessed(false);
     setHoveredIdx(null);
-    setShowAllInsights(false);
+    setExpandedIdx(null);
+    setFlashIdx(null);
     setBubbleLayouts([]);
     setCurrentPage(1);
 
@@ -224,14 +215,18 @@ export default function Home() {
   };
 
   let anchoredCount = 0;
-  let unanchoredIndices = new Set<number>();
+  let pageLevelCount = 0;
 
   const bubblePageMap: Record<number, number> = {};
   const pages: PageData[] = [];
 
+  let matches: any[] = [];
   if (documentText && bubbles.length > 0) {
-    const matches = bubbles.map((b, i) => {
+    matches = bubbles.map((b, i) => {
       const match = findMatch(documentText, b.sourceText);
+      if (match.index === -1 && b.sourcePage) {
+        bubblePageMap[i] = b.sourcePage;
+      }
       return {
         bubbleIdx: i,
         index: match.index,
@@ -241,7 +236,7 @@ export default function Home() {
     });
 
     anchoredCount = matches.filter(m => m.isAnchored).length;
-    unanchoredIndices = new Set(matches.filter(m => !m.isAnchored).map(m => m.bubbleIdx));
+    pageLevelCount = bubbles.filter((b, i) => !matches[i].isAnchored && b.sourcePage).length;
 
     const validMatches = matches
       .filter(m => m.index !== -1 && visibleBubblesSet.has(m.bubbleIdx));
@@ -450,7 +445,7 @@ export default function Home() {
       clearTimeout(timeout);
       window.removeEventListener('resize', updatePositions);
     };
-  }, [bubbles, documentText, showAllInsights, visibleBubblesSet, currentPage]);
+  }, [bubbles, documentText, visibleBubblesSet, currentPage]);
 
   const renderCardContent = (bubble: Bubble) => (
     <>
@@ -488,9 +483,7 @@ export default function Home() {
 
       {hasProcessed && (
         <div className="debug-panel">
-          <div><strong>Total Pages Processed:</strong> {pages.length}</div>
-          <div><strong>Total Insights Found:</strong> {bubbles.length}</div>
-          <div><strong>Insights Per Page:</strong> {pages.length ? (bubbles.length / pages.length).toFixed(1) : 0}</div>
+          <div>{pages.length} pages analyzed &middot; {bubbles.length} insights found &middot; {anchoredCount} anchored &middot; {pageLevelCount} page-level matches</div>
         </div>
       )}
 
@@ -561,55 +554,58 @@ export default function Home() {
             })}
           </svg>
 
-          <div className="workspace-layout">
-            <div className="sidebar-insights">
-              <h2>Top Insights</h2>
+          <div className="insight-map-container">
+            <h2>Insight Map</h2>
+            <div className="insight-pills-grid">
               {bubbles.map((bubble, idx) => {
                 if (!visibleBubblesSet.has(idx)) return null;
-                const isUnanchored = unanchoredIndices.has(idx);
+                const isAnchored = matches[idx]?.isAnchored;
                 const isHovered = hoveredIdx === idx;
+                const isExpanded = expandedIdx === idx;
+
                 return (
-                  <div 
-                    key={idx}
-                    className={`sidebar-card style-${bubble.importance} ${isHovered ? 'card-hovered' : ''}`}
-                    onMouseEnter={() => setHoveredIdx(idx)}
-                    onMouseLeave={() => setHoveredIdx(null)}
-                    onClick={() => {
-                      if (!isUnanchored && bubblePageMap[idx]) {
-                        setCurrentPage(bubblePageMap[idx]);
-                        setTimeout(() => {
-                           const node = highlightRefs.current[idx];
-                           if (node) node.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        }, 100);
-                      }
-                    }}
-                  >
-                    <div className="card-header">
-                      <div className="card-title-wrap">
-                        <span className={`icon icon-${bubble.importance}`}>{getIconForType(bubble.type)}</span>
-                        <span className="card-title" style={{ fontSize: '0.9rem' }}>{bubble.title}</span>
-                      </div>
+                  <div key={idx} style={{ display: 'flex', flexDirection: 'column', width: isExpanded ? '100%' : 'auto' }}>
+                    <div 
+                      className={`insight-pill style-${bubble.importance} ${isHovered ? 'card-hovered' : ''}`}
+                      onMouseEnter={() => setHoveredIdx(idx)}
+                      onMouseLeave={() => setHoveredIdx(null)}
+                      onClick={() => {
+                        setExpandedIdx(isExpanded ? null : idx);
+                        if (bubblePageMap[idx]) {
+                          setCurrentPage(bubblePageMap[idx]);
+                          if (isAnchored) {
+                            setFlashIdx(idx);
+                            setTimeout(() => setFlashIdx(null), 2000);
+                            setTimeout(() => {
+                               const node = highlightRefs.current[idx];
+                               if (node) node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }, 100);
+                          }
+                        }
+                      }}
+                    >
+                      <span className={`icon icon-${bubble.importance}`}>{getIconForType(bubble.type)}</span>
+                      <span className="pill-title">{bubble.title}</span>
+                      {bubblePageMap[idx] && (
+                        <span className="pill-page">Pg {bubblePageMap[idx]}</span>
+                      )}
+                      {!isAnchored && bubblePageMap[idx] && (
+                        <span className="pill-page" style={{ backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24' }}>Page-level match</span>
+                      )}
                     </div>
-                    {isUnanchored && <span className="unanchored-tag">Unanchored</span>}
+                    {isExpanded && (
+                      <div className={`insight-expanded-details style-${bubble.importance}`}>
+                        {renderCardContent(bubble)}
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
+          </div>
 
-            <div className="document-container">
-              
-              {unanchoredIndices.size > 0 && (
-                <div className="warning-banner">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                    <line x1="12" y1="9" x2="12" y2="13"></line>
-                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                  </svg>
-                  Insights generated, but source text could not be matched.
-                </div>
-              )}
-
-              <div className="document-view">
+          <div className="document-container">
+            <div className="document-view">
                 {activePageData.segments.map((seg, idx) => {
                 if (seg.isPageMarker) {
                   return (
@@ -625,7 +621,7 @@ export default function Home() {
                     <span 
                       key={idx}
                       ref={el => { highlightRefs.current[seg.bubbleIdx!] = el }}
-                      className={`inline-container highlight highlight-${bubble.importance} ${isHovered ? 'highlight-active' : ''}`}
+                      className={`inline-container highlight highlight-${bubble.importance} ${isHovered ? 'highlight-active' : ''} ${flashIdx === seg.bubbleIdx ? 'highlight-flash' : ''}`}
                       onMouseEnter={() => setHoveredIdx(seg.bubbleIdx!)}
                       onMouseLeave={() => setHoveredIdx(null)}
                     >
@@ -638,50 +634,6 @@ export default function Home() {
               })}
             </div>
             
-            <div className="bottom-cards-row">
-              {bubbles.map((bubble, idx) => {
-                if (bubble.importance !== 'low' || !visibleBubblesSet.has(idx) || unanchoredIndices.has(idx)) return null;
-                if (bubblePageMap[idx] !== currentPage) return null;
-                const isHovered = hoveredIdx === idx;
-                return (
-                  <div 
-                    key={idx}
-                    id={`bubble-card-${idx}`}
-                    className={`callout-card bottom-card style-${bubble.importance} ${isHovered ? 'card-hovered' : ''}`}
-                    onMouseEnter={() => setHoveredIdx(idx)}
-                    onMouseLeave={() => setHoveredIdx(null)}
-                    onClick={() => trackEvent('callout_clicked', { title: bubble.title, type: bubble.type, importance: bubble.importance, cardPosition: 'bottom' })}
-                  >
-                    {renderCardContent(bubble)}
-                  </div>
-                );
-              })}
-            </div>
-
-            {unanchoredIndices.size > 0 && (
-              <div className="top-insights-section">
-                <h2>Top Insights (Unanchored)</h2>
-                <div className="bottom-cards-row">
-                  {bubbles.map((bubble, idx) => {
-                    if (!unanchoredIndices.has(idx)) return null;
-                    const isHovered = hoveredIdx === idx;
-                    return (
-                      <div 
-                        key={idx}
-                        id={`bubble-card-${idx}`}
-                        className={`callout-card bottom-card style-${bubble.importance} ${isHovered ? 'card-hovered' : ''}`}
-                        onMouseEnter={() => setHoveredIdx(idx)}
-                        onMouseLeave={() => setHoveredIdx(null)}
-                        onClick={() => trackEvent('callout_clicked', { title: bubble.title, type: bubble.type, importance: bubble.importance, cardPosition: 'unanchored' })}
-                      >
-                        {renderCardContent(bubble)}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
             <div className="pagination-controls">
               <button 
                 className="pagination-btn"
@@ -705,22 +657,12 @@ export default function Home() {
                 Next Page &rarr;
               </button>
             </div>
-            
-            {bubbles.length > 6 && (
-              <div className="toggle-insights-container">
-                <button 
-                  className="toggle-insights-btn"
-                  onClick={() => setShowAllInsights(!showAllInsights)}
-                >
-                  {showAllInsights ? "Show fewer insights" : `Show all insights (${bubbles.length})`}
-                </button>
-              </div>
-            )}
           </div>
 
           <div className="callouts-overlay">
             {bubbles.map((bubble, idx) => {
-              if (bubble.importance === 'low' || !visibleBubblesSet.has(idx) || unanchoredIndices.has(idx)) return null;
+              if (bubble.importance === 'low' || !visibleBubblesSet.has(idx) || !matches[idx]?.isAnchored) return null;
+              if (bubble.confidenceScore && bubble.confidenceScore < 0.8) return null;
               if (bubblePageMap[idx] !== currentPage) return null;
               
               const layout = bubbleLayouts[idx];
@@ -743,7 +685,6 @@ export default function Home() {
               );
             })}
           </div>
-        </div>
         </div>
       )}
     </main>
