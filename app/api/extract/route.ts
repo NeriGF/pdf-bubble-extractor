@@ -18,7 +18,6 @@ export async function POST(req: Request) {
     const openai = new OpenAI(); // Uses OPENAI_API_KEY from environment
     const formData = await req.formData();
     const file = formData.get('file') as File;
-    const isFull = formData.get('full') === 'true';
 
     if (!file) {
       return NextResponse.json({ error: 'No file uploaded' }, { status: 400 });
@@ -57,17 +56,30 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'No text could be extracted from this PDF' }, { status: 400 });
     }
 
-    const MAX_CHARS = isFull ? 50000 : 12000;
-    const isPreview = !isFull && text.length > MAX_CHARS;
-    const truncatedText = text.length > MAX_CHARS ? text.substring(0, MAX_CHARS) : text;
+    // Split text into pages based on the marker.
+    const pageRegex = /\\n--- PAGE \\d+ ---\\n/g;
+    const splitTexts = text.split(pageRegex);
+    const matches = Array.from(text.matchAll(pageRegex));
+    
+    const pages: string[] = [];
+    if (splitTexts.length > 0 && splitTexts[0].trim().length > 0) {
+       pages.push(splitTexts[0]); 
+    }
+    for (let i = 0; i < matches.length; i++) {
+       pages.push(matches[i][0] + splitTexts[i+1]);
+    }
 
-    // Send to OpenAI
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: `You are an AI assistant that extracts key points from a document.
+    if (pages.length === 0) {
+      pages.push(text);
+    }
+
+    const CHUNK_SIZE = 3;
+    const chunks: string[] = [];
+    for (let i = 0; i < pages.length; i += CHUNK_SIZE) {
+      chunks.push(pages.slice(i, i + CHUNK_SIZE).join(''));
+    }
+
+    const systemPrompt = `You are an AI assistant that extracts key points from a document.
 Extract the following elements: dates, money amounts, risks or warnings, and required actions.
 You MUST extract 4 to 10 distinct insights per page if the text permits.
 For each element, assign an importance ("high", "medium", or "low").
@@ -96,23 +108,43 @@ Return the result as a structured JSON object exactly matching this schema:
   ]
 }
 Ensure all keys are populated and the response is ONLY valid JSON.
-`
-        },
-        {
-          role: 'user',
-          content: `Here is the extracted document text:\n\n${truncatedText}` // Limit text to avoid token limits just in case
-        }
-      ],
-      response_format: { type: 'json_object' },
-    });
+`;
 
-    const resultText = completion.choices[0].message.content || '{"bubbles": []}';
-    const result = JSON.parse(resultText);
+    // Process all chunks concurrently
+    const completionPromises = chunks.map(chunkText => 
+      openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Here is the extracted document text:\n\n${chunkText}` }
+        ],
+        response_format: { type: 'json_object' },
+      }).catch(err => {
+        console.error('Error processing a chunk:', err);
+        return null;
+      })
+    );
+
+    const completions = await Promise.all(completionPromises);
+    
+    let allBubbles: any[] = [];
+    for (const completion of completions) {
+      if (!completion) continue;
+      const resultText = completion.choices[0].message.content || '{"bubbles": []}';
+      try {
+        const result = JSON.parse(resultText);
+        if (result.bubbles && Array.isArray(result.bubbles)) {
+          allBubbles = allBubbles.concat(result.bubbles);
+        }
+      } catch(e) {
+        console.error('Failed to parse chunk response', e);
+      }
+    }
 
     return NextResponse.json({
-      bubbles: result.bubbles,
-      documentText: truncatedText,
-      isPreview: isPreview
+      bubbles: allBubbles,
+      documentText: text,
+      totalPagesProcessed: pages.length
     });
   } catch (error: any) {
     console.error('Error processing PDF:', error);

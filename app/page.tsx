@@ -134,9 +134,7 @@ export default function Home() {
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [hasProcessed, setHasProcessed] = useState(false);
-  const [isPreview, setIsPreview] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const [isAnalyzingMore, setIsAnalyzingMore] = useState(false);
   
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const [showAllInsights, setShowAllInsights] = useState(false);
@@ -178,34 +176,23 @@ export default function Home() {
     }
   };
 
-  const handleUpload = async (isFull = false) => {
+  const handleUpload = async () => {
     if (!file) return;
 
-    if (isFull) {
-      setIsAnalyzingMore(true);
-    } else {
-      setIsLoading(true);
-    }
+    setIsLoading(true);
     setError(null);
-    
-    if (!isFull) {
-      setBubbles([]);
-      setDocumentText('');
-      setHasProcessed(false);
-      setHoveredIdx(null);
-      setShowAllInsights(false);
-      setBubbleLayouts([]);
-      setIsPreview(false);
-      setCurrentPage(1);
-    }
+    setBubbles([]);
+    setDocumentText('');
+    setHasProcessed(false);
+    setHoveredIdx(null);
+    setShowAllInsights(false);
+    setBubbleLayouts([]);
+    setCurrentPage(1);
 
-    trackEvent('pdf_uploaded', { fileName: file.name, fileSize: file.size, isFull });
+    trackEvent('pdf_uploaded', { fileName: file.name, fileSize: file.size });
 
     const formData = new FormData();
     formData.append('file', file);
-    if (isFull) {
-      formData.append('full', 'true');
-    }
 
     try {
       const response = await fetch('/api/extract', {
@@ -222,7 +209,6 @@ export default function Home() {
       if (data.bubbles && data.documentText) {
         setBubbles(data.bubbles);
         setDocumentText(data.documentText);
-        setIsPreview(data.isPreview || false);
         setHasProcessed(true);
         trackEvent('annotations_generated', { bubbleCount: data.bubbles.length });
         trackEvent('document_completed', { fileName: file.name });
@@ -234,7 +220,6 @@ export default function Home() {
       trackEvent('upload_failed', { error: err.message, fileName: file.name });
     } finally {
       setIsLoading(false);
-      setIsAnalyzingMore(false);
     }
   };
 
@@ -503,10 +488,9 @@ export default function Home() {
 
       {hasProcessed && (
         <div className="debug-panel">
-          <div><strong>Extracted Text Length:</strong> {documentText.length.toLocaleString()} chars</div>
-          <div><strong>AI Insights Returned:</strong> {bubbles.length}</div>
-          <div><strong>Matched Source Anchors:</strong> {anchoredCount}</div>
-          <div><strong>Rendered Callouts:</strong> {bubbles.length}</div>
+          <div><strong>Total Pages Processed:</strong> {pages.length}</div>
+          <div><strong>Total Insights Found:</strong> {bubbles.length}</div>
+          <div><strong>Insights Per Page:</strong> {pages.length ? (bubbles.length / pages.length).toFixed(1) : 0}</div>
         </div>
       )}
 
@@ -613,18 +597,6 @@ export default function Home() {
             </div>
 
             <div className="document-container">
-              {isPreview && (
-                <div className="preview-banner">
-                  <span>Preview analyzing first pages only.</span>
-                  <button 
-                    className="analyze-more-btn"
-                    onClick={() => handleUpload(true)}
-                    disabled={isAnalyzingMore}
-                  >
-                    {isAnalyzingMore ? "Analyzing..." : "Analyze more pages"}
-                  </button>
-                </div>
-              )}
               
               {unanchoredIndices.size > 0 && (
                 <div className="warning-banner">
