@@ -137,7 +137,6 @@ export default function Home() {
   const [currentPage, setCurrentPage] = useState(1);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [flashIdx, setFlashIdx] = useState<number | null>(null);
-  
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -178,7 +177,7 @@ export default function Home() {
     setExpandedIdx(null);
     setFlashIdx(null);
     setBubbleLayouts([]);
-    setCurrentPage(1);
+    setCurrentPage(1); // will be corrected to real first page by useEffect if needed
 
     trackEvent('pdf_uploaded', { fileName: file.name, fileSize: file.size });
 
@@ -214,122 +213,174 @@ export default function Home() {
     }
   };
 
-  let anchoredCount = 0;
-  let pageLevelCount = 0;
+  const { pages, bubblePageMap, matches, anchoredCount, pageLevelCount } = useMemo(() => {
+    let anchoredCount = 0;
+    let pageLevelCount = 0;
+    const bubblePageMap: Record<number, number> = {};
+    const pages: PageData[] = [];
+    let matches: any[] = [];
 
-  const bubblePageMap: Record<number, number> = {};
-  const pages: PageData[] = [];
-
-  let matches: any[] = [];
-  if (documentText && bubbles.length > 0) {
-    matches = bubbles.map((b, i) => {
-      const match = findMatch(documentText, b.sourceText);
-      if (match.index === -1 && b.sourcePage) {
-        bubblePageMap[i] = b.sourcePage;
-      }
-      return {
-        bubbleIdx: i,
-        index: match.index,
-        length: match.length,
-        isAnchored: match.index !== -1
-      };
-    });
-
-    anchoredCount = matches.filter(m => m.isAnchored).length;
-    pageLevelCount = bubbles.filter((b, i) => !matches[i].isAnchored && b.sourcePage).length;
-
-    const validMatches = matches
-      .filter(m => m.index !== -1 && visibleBubblesSet.has(m.bubbleIdx));
-
-    const allMarkers: any[] = [];
-    
-    for (const m of validMatches) {
-      allMarkers.push({ type: 'bubble', ...m });
-    }
-    
-    const pageRegex = /---\s*PAGE\s+(\d+)\s*---/g;
-    let pageMatch;
-    while ((pageMatch = pageRegex.exec(documentText)) !== null) {
-      allMarkers.push({
-        type: 'page',
-        index: pageMatch.index,
-        length: pageMatch[0].length,
-        pageNum: pageMatch[1]
+    if (documentText && bubbles.length > 0) {
+      matches = bubbles.map((b, i) => {
+        const match = findMatch(documentText, b.sourceText);
+        if (match.index === -1 && b.sourcePage) {
+          bubblePageMap[i] = b.sourcePage;
+        }
+        return {
+          bubbleIdx: i,
+          index: match.index,
+          length: match.length,
+          isAnchored: match.index !== -1
+        };
       });
-    }
 
-    allMarkers.sort((a, b) => a.index - b.index);
+      anchoredCount = matches.filter(m => m.isAnchored).length;
+      pageLevelCount = bubbles.filter((b, i) => !matches[i].isAnchored && b.sourcePage).length;
 
-    const filteredMarkers: typeof allMarkers = [];
-    let lastEnd = 0;
-    for (const m of allMarkers) {
-      if (m.index >= lastEnd) {
-        filteredMarkers.push(m);
-        lastEnd = m.index + m.length;
+      const validMatches = matches
+        .filter(m => m.index !== -1 && visibleBubblesSet.has(m.bubbleIdx));
+
+      const allMarkers: any[] = [];
+      
+      for (const m of validMatches) {
+        allMarkers.push({ type: 'bubble', ...m });
       }
-    }
-
-    let currentIdx = 0;
-    let currentSegments: TextSegment[] = [];
-    let currentPageNum = 1;
-    let pageHasContent = false;
-
-    const pushToPage = () => {
-      if (currentSegments.length > 0 || pageHasContent) {
-        pages.push({ pageNum: currentPageNum, segments: currentSegments });
-        currentSegments = [];
-        pageHasContent = false;
-      }
-    };
-
-    for (const match of filteredMarkers) {
-      if (match.index > currentIdx) {
-        currentSegments.push({ text: documentText.substring(currentIdx, match.index), isHighlight: false });
-        pageHasContent = true;
-      }
-      if (match.type === 'bubble') {
-        currentSegments.push({ 
-          text: documentText.substring(match.index, match.index + match.length), 
-          isHighlight: true,
-          bubbleIdx: match.bubbleIdx
+      
+      const pageRegex = /---\s*PAGE\s+(\d+)\s*---/g;
+      let pageMatch;
+      while ((pageMatch = pageRegex.exec(documentText)) !== null) {
+        allMarkers.push({
+          type: 'page',
+          index: pageMatch.index,
+          length: pageMatch[0].length,
+          pageNum: pageMatch[1]
         });
-        bubblePageMap[match.bubbleIdx] = currentPageNum;
+      }
+
+      allMarkers.sort((a, b) => a.index - b.index);
+
+      const filteredMarkers: typeof allMarkers = [];
+      let lastEnd = 0;
+      for (const m of allMarkers) {
+        if (m.index >= lastEnd) {
+          filteredMarkers.push(m);
+          lastEnd = m.index + m.length;
+        }
+      }
+
+      let currentIdx = 0;
+      let currentSegments: TextSegment[] = [];
+      let currentPageNum = 1;
+      let pageHasContent = false;
+
+      const pushToPage = () => {
+        if (currentSegments.length > 0 || pageHasContent) {
+          const isOnlyWhitespace = currentSegments.every(s => !s.isHighlight && s.text.trim() === '');
+          if (isOnlyWhitespace && pages.length === 0) {
+             // Skip leading whitespace before the first page marker
+          } else {
+            const existingPage = pages.find(p => p.pageNum === currentPageNum);
+            if (existingPage) {
+              existingPage.segments.push(...currentSegments);
+            } else {
+              pages.push({ pageNum: currentPageNum, segments: currentSegments });
+            }
+          }
+          currentSegments = [];
+          pageHasContent = false;
+        }
+      };
+
+      for (const match of filteredMarkers) {
+        if (match.index > currentIdx) {
+          currentSegments.push({ text: documentText.substring(currentIdx, match.index), isHighlight: false });
+          pageHasContent = true;
+        }
+        if (match.type === 'bubble') {
+          currentSegments.push({ 
+            text: documentText.substring(match.index, match.index + match.length), 
+            isHighlight: true,
+            bubbleIdx: match.bubbleIdx
+          });
+          bubblePageMap[match.bubbleIdx] = currentPageNum;
+          pageHasContent = true;
+        } else if (match.type === 'page') {
+          pushToPage();
+          currentPageNum = parseInt(match.pageNum, 10) || currentPageNum + 1;
+        }
+        currentIdx = match.index + match.length;
+      }
+      if (currentIdx < documentText.length) {
+        currentSegments.push({ text: documentText.substring(currentIdx), isHighlight: false });
         pageHasContent = true;
-      } else if (match.type === 'page') {
-        pushToPage();
-        currentPageNum = parseInt(match.pageNum, 10) || currentPageNum + 1;
       }
-      currentIdx = match.index + match.length;
-    }
-    if (currentIdx < documentText.length) {
-      currentSegments.push({ text: documentText.substring(currentIdx), isHighlight: false });
-      pageHasContent = true;
-    }
-    pushToPage();
-  } else if (documentText) {
-    const pageRegex = /---\s*PAGE\s+(\d+)\s*---/g;
-    let currentIdx = 0;
-    let currentSegments: TextSegment[] = [];
-    let currentPageNum = 1;
-    let match;
-    while ((match = pageRegex.exec(documentText)) !== null) {
-      if (match.index > currentIdx) {
-        currentSegments.push({ text: documentText.substring(currentIdx, match.index), isHighlight: false });
+      pushToPage();
+    } else if (documentText) {
+      const pageRegex = /---\s*PAGE\s+(\d+)\s*---/g;
+      let currentIdx = 0;
+      let currentSegments: TextSegment[] = [];
+      let currentPageNum = 1;
+      let match;
+      while ((match = pageRegex.exec(documentText)) !== null) {
+        if (match.index > currentIdx) {
+          currentSegments.push({ text: documentText.substring(currentIdx, match.index), isHighlight: false });
+        }
+        if (currentSegments.length > 0) {
+          const isOnlyWhitespace = currentSegments.every(s => !s.isHighlight && s.text.trim() === '');
+          if (!(isOnlyWhitespace && pages.length === 0)) {
+            const existingPage = pages.find(p => p.pageNum === currentPageNum);
+            if (existingPage) {
+              existingPage.segments.push(...currentSegments);
+            } else {
+              pages.push({ pageNum: currentPageNum, segments: currentSegments });
+            }
+          }
+        }
+        currentSegments = [];
+        currentPageNum = parseInt(match[1], 10);
+        currentIdx = match.index + match[0].length;
       }
-      if (currentSegments.length > 0) {
-        pages.push({ pageNum: currentPageNum, segments: currentSegments });
+      if (currentIdx < documentText.length) {
+        currentSegments.push({ text: documentText.substring(currentIdx), isHighlight: false });
+        const existingPage = pages.find(p => p.pageNum === currentPageNum);
+        if (existingPage) {
+          existingPage.segments.push(...currentSegments);
+        } else {
+          pages.push({ pageNum: currentPageNum, segments: currentSegments });
+        }
       }
-      currentSegments = [];
-      currentPageNum = parseInt(match[1], 10);
-      currentIdx = match.index + match[0].length;
     }
-    if (currentIdx < documentText.length) {
-      currentSegments.push({ text: documentText.substring(currentIdx), isHighlight: false });
-      pages.push({ pageNum: currentPageNum, segments: currentSegments });
+
+    return { pages, bubblePageMap, matches, anchoredCount, pageLevelCount };
+  }, [documentText, bubbles, visibleBubblesSet]);
+
+  // Synchronize current page and state if the parsed pages don't match our assumption
+  useEffect(() => {
+    if (hasProcessed && pages.length > 0) {
+      if (!pages.find(p => p.pageNum === currentPage)) {
+        setCurrentPage(pages[0].pageNum);
+      }
     }
-  }
+  }, [hasProcessed, pages, currentPage]);
 
   const activePageData = pages.find(p => p.pageNum === currentPage) || pages[0] || { pageNum: 1, segments: [] };
+  const isPageReady = pages.length > 0 && pages.find(p => p.pageNum === currentPage);
+
+  // Temporary logs as requested
+  useEffect(() => {
+    if (hasProcessed && pages.length > 0) {
+      console.log(`[Init Check] Total pages: ${pages.length}`);
+      console.log(`[Init Check] Initial currentPage state: ${currentPage}`);
+      console.log(`[Init Check] Page requested for rendering: ${activePageData.pageNum}`);
+      console.log(`[Init Check] Rendered page content exists: ${activePageData.segments.length > 0}`);
+      
+      const docView = document.querySelector('.document-view');
+      if (docView) {
+        const rect = docView.getBoundingClientRect();
+        console.log(`[Init Check] Page width: ${rect.width}, height: ${rect.height}`);
+      }
+    }
+  }, [hasProcessed, pages, currentPage, activePageData]);
 
   useEffect(() => {
     if (!workspaceRef.current || bubbles.length === 0) return;
@@ -528,163 +579,172 @@ export default function Home() {
 
       {hasProcessed && (
         <div className="workspace" ref={workspaceRef}>
-          <svg className="lines-overlay">
-            {bubbleLayouts.map((layout, idx) => {
-              if (!layout || !visibleBubblesSet.has(idx) || bubblePageMap[idx] !== currentPage) return null;
-              const line = layout.line;
-              let pathData = '';
-              if (layout.isBottom) {
-                // Draw line downwards
-                const dy = Math.abs(line.y2 - line.y1) / 2;
-                pathData = `M ${line.x1} ${line.y1} C ${line.x1} ${line.y1 + dy}, ${line.x2} ${line.y2 - dy}, ${line.x2} ${line.y2}`;
-              } else {
-                // Draw line sideways
-                const isLeft = line.x2 > line.x1;
-                const dx = Math.min(Math.abs(line.x2 - line.x1) * 0.4, 40);
-                pathData = `M ${line.x1} ${line.y1} C ${line.x1 + (isLeft ? dx : -dx)} ${line.y1}, ${line.x2 + (isLeft ? -dx : dx)} ${line.y2}, ${line.x2} ${line.y2}`;
-              }
-              
-              return (
-                <path 
-                  key={line.idx}
-                  d={pathData}
-                  className={`connection-line ${line.colorClass} ${hoveredIdx === line.idx ? 'line-active' : ''}`}
-                />
-              );
-            })}
-          </svg>
+          {!isPageReady ? (
+            <div className="loading" style={{ margin: 'auto', padding: '4rem 0' }}>
+              <div className="spinner"></div>
+              <p>Preparing initial page content...</p>
+            </div>
+          ) : (
+            <>
+              <svg className="lines-overlay">
+                {bubbleLayouts.map((layout, idx) => {
+                  if (!layout || !visibleBubblesSet.has(idx) || bubblePageMap[idx] !== currentPage) return null;
+                  const line = layout.line;
+                  let pathData = '';
+                  if (layout.isBottom) {
+                    // Draw line downwards
+                    const dy = Math.abs(line.y2 - line.y1) / 2;
+                    pathData = `M ${line.x1} ${line.y1} C ${line.x1} ${line.y1 + dy}, ${line.x2} ${line.y2 - dy}, ${line.x2} ${line.y2}`;
+                  } else {
+                    // Draw line sideways
+                    const isLeft = line.x2 > line.x1;
+                    const dx = Math.min(Math.abs(line.x2 - line.x1) * 0.4, 40);
+                    pathData = `M ${line.x1} ${line.y1} C ${line.x1 + (isLeft ? dx : -dx)} ${line.y1}, ${line.x2 + (isLeft ? -dx : dx)} ${line.y2}, ${line.x2} ${line.y2}`;
+                  }
+                  
+                  return (
+                    <path 
+                      key={line.idx}
+                      d={pathData}
+                      className={`connection-line ${line.colorClass} ${hoveredIdx === line.idx ? 'line-active' : ''}`}
+                    />
+                  );
+                })}
+              </svg>
 
-          <div className="insight-map-container">
-            <h2>Insight Map</h2>
-            <div className="insight-pills-grid">
-              {bubbles.map((bubble, idx) => {
-                if (!visibleBubblesSet.has(idx)) return null;
-                const isAnchored = matches[idx]?.isAnchored;
-                const isHovered = hoveredIdx === idx;
-                const isExpanded = expandedIdx === idx;
+              <div className="insight-map-container">
+                <h2>Insight Map</h2>
+                <div className="insight-pills-grid">
+                  {bubbles.map((bubble, idx) => {
+                    if (!visibleBubblesSet.has(idx)) return null;
+                    const isAnchored = matches[idx]?.isAnchored;
+                    const isHovered = hoveredIdx === idx;
+                    const isExpanded = expandedIdx === idx;
 
-                return (
-                  <div key={idx} style={{ display: 'flex', flexDirection: 'column', width: isExpanded ? '100%' : 'auto' }}>
+                    return (
+                      <div key={idx} style={{ display: 'flex', flexDirection: 'column', width: isExpanded ? '100%' : 'auto' }}>
+                        <div 
+                          className={`insight-pill style-${bubble.importance} ${isHovered ? 'card-hovered' : ''}`}
+                          onMouseEnter={() => setHoveredIdx(idx)}
+                          onMouseLeave={() => setHoveredIdx(null)}
+                          onClick={() => {
+                            setExpandedIdx(isExpanded ? null : idx);
+                            if (bubblePageMap[idx]) {
+                              setCurrentPage(bubblePageMap[idx]);
+                              if (isAnchored) {
+                                setFlashIdx(idx);
+                                setTimeout(() => setFlashIdx(null), 2000);
+                                setTimeout(() => {
+                                   const node = highlightRefs.current[idx];
+                                   if (node) node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }, 100);
+                              }
+                            }
+                          }}
+                        >
+                          <span className={`icon icon-${bubble.importance}`}>{getIconForType(bubble.type)}</span>
+                          <span className="pill-title">{bubble.title}</span>
+                          {bubblePageMap[idx] && (
+                            <span className="pill-page">Pg {bubblePageMap[idx]}</span>
+                          )}
+                          {!isAnchored && bubblePageMap[idx] && (
+                            <span className="pill-page" style={{ backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24' }}>Page-level match</span>
+                          )}
+                        </div>
+                        {isExpanded && (
+                          <div className={`insight-expanded-details style-${bubble.importance}`}>
+                            {renderCardContent(bubble)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="document-container">
+                <div className="document-view">
+                    {activePageData.segments.map((seg, idx) => {
+                    if (seg.isPageMarker) {
+                      return (
+                        <div key={idx} className="page-divider">
+                          <span>Page {seg.pageNum}</span>
+                        </div>
+                      );
+                    }
+                    if (seg.isHighlight) {
+                      const bubble = bubbles[seg.bubbleIdx!];
+                      const isHovered = hoveredIdx === seg.bubbleIdx;
+                      return (
+                        <span 
+                          key={idx}
+                          ref={el => { highlightRefs.current[seg.bubbleIdx!] = el }}
+                          className={`inline-container highlight highlight-${bubble.importance} ${isHovered ? 'highlight-active' : ''} ${flashIdx === seg.bubbleIdx ? 'highlight-flash' : ''}`}
+                          onMouseEnter={() => setHoveredIdx(seg.bubbleIdx!)}
+                          onMouseLeave={() => setHoveredIdx(null)}
+                        >
+                          {seg.text}
+                          <span className={`anchor-dot dot-${bubble.importance}`}></span>
+                        </span>
+                      );
+                    }
+                    return <span key={idx}>{seg.text}</span>;
+                  })}
+                </div>
+                
+                <div className="pagination-controls">
+                  <button 
+                    className="pagination-btn"
+                    disabled={pages.findIndex(p => p.pageNum === currentPage) <= 0}
+                    onClick={() => {
+                      const idx = pages.findIndex(p => p.pageNum === currentPage);
+                      if (idx > 0) setCurrentPage(pages[idx - 1].pageNum);
+                    }}
+                  >
+                    &larr; Previous Page
+                  </button>
+                  <span className="page-indicator">Page {currentPage} of {pages[pages.length - 1]?.pageNum || 1}</span>
+                  <button 
+                    className="pagination-btn"
+                    disabled={pages.findIndex(p => p.pageNum === currentPage) >= pages.length - 1}
+                    onClick={() => {
+                      const idx = pages.findIndex(p => p.pageNum === currentPage);
+                      if (idx < pages.length - 1) setCurrentPage(pages[idx + 1].pageNum);
+                    }}
+                  >
+                    Next Page &rarr;
+                  </button>
+                </div>
+              </div>
+
+              <div className="callouts-overlay">
+                {bubbles.map((bubble, idx) => {
+                  if (bubble.importance === 'low' || !visibleBubblesSet.has(idx) || !matches[idx]?.isAnchored) return null;
+                  if (bubble.confidenceScore && bubble.confidenceScore < 0.8) return null;
+                  if (bubblePageMap[idx] !== currentPage) return null;
+                  
+                  const layout = bubbleLayouts[idx];
+                  if (!layout) return null;
+                  
+                  const isHovered = hoveredIdx === idx;
+
+                  return (
                     <div 
-                      className={`insight-pill style-${bubble.importance} ${isHovered ? 'card-hovered' : ''}`}
+                      key={idx}
+                      id={`bubble-card-${idx}`}
+                      className={`callout-card side-card style-${bubble.importance} ${isHovered ? 'card-hovered' : ''}`}
+                      style={{ top: layout.top, left: layout.left, right: layout.right }}
                       onMouseEnter={() => setHoveredIdx(idx)}
                       onMouseLeave={() => setHoveredIdx(null)}
-                      onClick={() => {
-                        setExpandedIdx(isExpanded ? null : idx);
-                        if (bubblePageMap[idx]) {
-                          setCurrentPage(bubblePageMap[idx]);
-                          if (isAnchored) {
-                            setFlashIdx(idx);
-                            setTimeout(() => setFlashIdx(null), 2000);
-                            setTimeout(() => {
-                               const node = highlightRefs.current[idx];
-                               if (node) node.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            }, 100);
-                          }
-                        }
-                      }}
+                      onClick={() => trackEvent('callout_clicked', { title: bubble.title, type: bubble.type, importance: bubble.importance, cardPosition: 'side' })}
                     >
-                      <span className={`icon icon-${bubble.importance}`}>{getIconForType(bubble.type)}</span>
-                      <span className="pill-title">{bubble.title}</span>
-                      {bubblePageMap[idx] && (
-                        <span className="pill-page">Pg {bubblePageMap[idx]}</span>
-                      )}
-                      {!isAnchored && bubblePageMap[idx] && (
-                        <span className="pill-page" style={{ backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24' }}>Page-level match</span>
-                      )}
-                    </div>
-                    {isExpanded && (
-                      <div className={`insight-expanded-details style-${bubble.importance}`}>
-                        {renderCardContent(bubble)}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="document-container">
-            <div className="document-view">
-                {activePageData.segments.map((seg, idx) => {
-                if (seg.isPageMarker) {
-                  return (
-                    <div key={idx} className="page-divider">
-                      <span>Page {seg.pageNum}</span>
+                      {renderCardContent(bubble)}
                     </div>
                   );
-                }
-                if (seg.isHighlight) {
-                  const bubble = bubbles[seg.bubbleIdx!];
-                  const isHovered = hoveredIdx === seg.bubbleIdx;
-                  return (
-                    <span 
-                      key={idx}
-                      ref={el => { highlightRefs.current[seg.bubbleIdx!] = el }}
-                      className={`inline-container highlight highlight-${bubble.importance} ${isHovered ? 'highlight-active' : ''} ${flashIdx === seg.bubbleIdx ? 'highlight-flash' : ''}`}
-                      onMouseEnter={() => setHoveredIdx(seg.bubbleIdx!)}
-                      onMouseLeave={() => setHoveredIdx(null)}
-                    >
-                      {seg.text}
-                      <span className={`anchor-dot dot-${bubble.importance}`}></span>
-                    </span>
-                  );
-                }
-                return <span key={idx}>{seg.text}</span>;
-              })}
-            </div>
-            
-            <div className="pagination-controls">
-              <button 
-                className="pagination-btn"
-                disabled={pages.findIndex(p => p.pageNum === currentPage) <= 0}
-                onClick={() => {
-                  const idx = pages.findIndex(p => p.pageNum === currentPage);
-                  if (idx > 0) setCurrentPage(pages[idx - 1].pageNum);
-                }}
-              >
-                &larr; Previous Page
-              </button>
-              <span className="page-indicator">Page {currentPage} of {pages[pages.length - 1]?.pageNum || 1}</span>
-              <button 
-                className="pagination-btn"
-                disabled={pages.findIndex(p => p.pageNum === currentPage) >= pages.length - 1}
-                onClick={() => {
-                  const idx = pages.findIndex(p => p.pageNum === currentPage);
-                  if (idx < pages.length - 1) setCurrentPage(pages[idx + 1].pageNum);
-                }}
-              >
-                Next Page &rarr;
-              </button>
-            </div>
-          </div>
-
-          <div className="callouts-overlay">
-            {bubbles.map((bubble, idx) => {
-              if (bubble.importance === 'low' || !visibleBubblesSet.has(idx) || !matches[idx]?.isAnchored) return null;
-              if (bubble.confidenceScore && bubble.confidenceScore < 0.8) return null;
-              if (bubblePageMap[idx] !== currentPage) return null;
-              
-              const layout = bubbleLayouts[idx];
-              if (!layout) return null;
-              
-              const isHovered = hoveredIdx === idx;
-
-              return (
-                <div 
-                  key={idx}
-                  id={`bubble-card-${idx}`}
-                  className={`callout-card side-card style-${bubble.importance} ${isHovered ? 'card-hovered' : ''}`}
-                  style={{ top: layout.top, left: layout.left, right: layout.right }}
-                  onMouseEnter={() => setHoveredIdx(idx)}
-                  onMouseLeave={() => setHoveredIdx(null)}
-                  onClick={() => trackEvent('callout_clicked', { title: bubble.title, type: bubble.type, importance: bubble.importance, cardPosition: 'side' })}
-                >
-                  {renderCardContent(bubble)}
-                </div>
-              );
-            })}
-          </div>
+                })}
+              </div>
+            </>
+          )}
         </div>
       )}
     </main>
