@@ -133,12 +133,42 @@ body {
   overflow-y: auto;
 }
 
-.insight-map-container h2 {
-  font-size: 1.15rem;
-  color: #f8fafc;
+.insight-map-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin: 0 0 1rem 0;
   border-bottom: 1px solid var(--border-color);
   padding-bottom: 0.5rem;
+  cursor: grab;
+}
+
+.insight-map-header:active {
+  cursor: grabbing;
+}
+
+.insight-map-header h2 {
+  font-size: 1.15rem;
+  color: #f8fafc;
+  margin: 0;
+  border: none;
+  padding: 0;
+}
+
+.insight-map-reset-btn {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s;
+}
+
+.insight-map-reset-btn:hover {
+  color: #f8fafc;
 }
 
 .insight-pills-grid {

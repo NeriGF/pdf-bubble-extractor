@@ -139,6 +139,10 @@ export default function Home() {
   const [flashIdx, setFlashIdx] = useState<number | null>(null);
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
+  const [mapPosition, setMapPosition] = useState<{ x: number, y: number } | null>(null);
+  const [isDraggingMap, setIsDraggingMap] = useState(false);
+  const dragStart = useRef<{ x: number, y: number, startX: number, startY: number } | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const highlightRefs = useRef<(HTMLElement | null)[]>([]);
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -525,6 +529,67 @@ export default function Home() {
     </>
   );
 
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingMap || !dragStart.current) return;
+      
+      const deltaX = e.clientX - dragStart.current.x;
+      const deltaY = e.clientY - dragStart.current.y;
+      
+      let newX = dragStart.current.startX + deltaX;
+      let newY = dragStart.current.startY + deltaY;
+      
+      const mapContainer = document.querySelector('.insight-map-container') as HTMLElement;
+      if (mapContainer) {
+        const rect = mapContainer.getBoundingClientRect();
+        if (newX < 0) newX = 0;
+        if (newY < 0) newY = 0;
+        if (newX + rect.width > window.innerWidth) newX = window.innerWidth - rect.width;
+        if (newY + rect.height > window.innerHeight) newY = window.innerHeight - rect.height;
+      }
+      
+      setMapPosition({ x: newX, y: newY });
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingMap(false);
+      dragStart.current = null;
+    };
+
+    if (isDraggingMap) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDraggingMap]);
+
+  const handleMapMouseDown = (e: React.MouseEvent) => {
+    if (window.innerWidth <= 768) return;
+    
+    e.preventDefault();
+    setIsDraggingMap(true);
+    
+    const mapContainer = document.querySelector('.insight-map-container') as HTMLElement;
+    const currentRect = mapContainer.getBoundingClientRect();
+    const currentX = mapPosition ? mapPosition.x : currentRect.left;
+    const currentY = mapPosition ? mapPosition.y : currentRect.top;
+    
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      startX: currentX,
+      startY: currentY
+    };
+  };
+
+  const resetMapPosition = () => {
+    setMapPosition(null);
+  };
+
   return (
     <main className="app-container">
       <header className="app-header">
@@ -612,8 +677,34 @@ export default function Home() {
                 })}
               </svg>
 
-              <div className="insight-map-container">
-                <h2>Insight Map</h2>
+              <div 
+                className={`insight-map-container ${isDraggingMap ? 'dragging' : ''}`}
+                style={mapPosition && typeof window !== 'undefined' && window.innerWidth > 768 ? {
+                  position: 'fixed',
+                  left: `${mapPosition.x}px`,
+                  top: `${mapPosition.y}px`,
+                  margin: 0,
+                  zIndex: 100
+                } : undefined}
+              >
+                <div 
+                  className="insight-map-header"
+                  onMouseDown={handleMapMouseDown}
+                >
+                  <h2>Insight Map</h2>
+                  {mapPosition && (
+                    <button 
+                      className="insight-map-reset-btn"
+                      onClick={resetMapPosition}
+                      title="Reset Position"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                        <path d="M3 3v5h5"></path>
+                      </svg>
+                    </button>
+                  )}
+                </div>
                 <div className="insight-pills-grid">
                   {bubbles.map((bubble, idx) => {
                     if (!visibleBubblesSet.has(idx)) return null;
